@@ -2,7 +2,6 @@
 
 Shardlet is a compact Go project that models the core pieces of a sharded key/value store: concurrent shards, shard-group ownership, TCP clients, Raft-style replicated shard groups, TTL expiration, range scans, snapshots, and live rebalancing.
 
-It is inspired by MIT 6.5840's sharded key/value service lab, but the repo is shaped as a portfolio project: small API surface, readable packages, tests, benchmarks, race-detector coverage, and clear boundaries around what is implemented.
 
 ## Highlights
 
@@ -220,7 +219,3 @@ Not yet implemented:
 - Implement idempotent shard freeze, install, and delete migration.
 - Add exactly-once client request handling.
 - Add Prometheus metrics for latency, lock contention, quorum failures, and shard movement.
-
-## Resume Bullet
-
-Built **Shardlet**, a Go-based sharded key/value store prototype with per-shard locking, TCP client/server APIs, Raft-style majority replication per shard group, concurrent client workloads, live shard-group rebalancing, TTL expiration, snapshots, range scans, tests, benchmarks, and race-detector validation.
