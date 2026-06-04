@@ -1,41 +1,49 @@
 # Shardlet
 
-Shardlet is a small Go project for experimenting with the building blocks behind a sharded key/value store: logical shards, shard-group ownership, concurrent clients, TTL cleanup, range scans, snapshots, and live rebalancing.
+Shardlet is a compact Go project that models the core pieces of a sharded key/value store: concurrent shards, shard-group ownership, TCP clients, Raft-style replicated shard groups, TTL expiration, range scans, snapshots, and live rebalancing.
 
-The project is inspired by MIT 6.5840's sharded key/value service lab, but it is written as a portfolio-friendly Go codebase with a focused API, tests, benchmarks, and a concurrent demo workload.
+It is inspired by MIT 6.5840's sharded key/value service lab, but the repo is shaped as a portfolio project: small API surface, readable packages, tests, benchmarks, race-detector coverage, and clear boundaries around what is implemented.
 
-## Why this project exists
+## Highlights
 
-Shardlet is meant to show practical Go experience beyond syntax:
-
-- `sync.RWMutex` based per-shard concurrency
-- goroutine-heavy client workloads
-- TCP client/server APIs using newline-delimited JSON
-- Raft-style replicated logs per shard group
-- race-detector friendly shared-state design
-- deterministic shard placement
-- live shard-group rebalancing while clients read and write
-- table-driven tests and benchmarks
+- **Go concurrency:** per-shard `sync.RWMutex` locking, goroutine-heavy workloads, concurrent TCP clients, and race-detector validation.
+- **Sharding:** deterministic FNV-1a key placement across logical shards.
+- **TCP API:** newline-delimited JSON protocol between remote clients and shard groups.
+- **Raft-style replication:** leader log, majority commit, follower catch-up, no-quorum rejection, and deterministic leader promotion.
+- **Storage features:** `Put`, `Get`, `Delete`, TTL expiration, sorted range scans, snapshots, and cluster stats.
+- **Verification:** unit tests, network tests, concurrent replication tests, race tests, and benchmarks.
 
 ## Quick Start
 
 ```bash
-go test ./...
-go test -race ./...
+make test
+make race
+make bench
+make demo
+```
+
+Run the local concurrent workload:
+
+```bash
 go run ./cmd/shardlet -workers 32 -ops 100000
+```
+
+Start a TCP shard group API:
+
+```bash
 go run ./cmd/shardlet -listen 127.0.0.1:7070
 ```
 
-Or use the Makefile:
+## Packages
 
-```bash
-make test
-make race
-make demo
-make bench
-```
+| Package | Purpose |
+| --- | --- |
+| `pkg/shardlet` | In-memory sharded key/value store with per-shard locking. |
+| `pkg/shardletnet` | TCP JSON client/server API for remote shard group operations. |
+| `pkg/raftgroup` | In-memory Raft-style replicated shard group built around `shardlet.Store`. |
+| `cmd/shardlet` | Demo workload runner and TCP server entrypoint. |
 
-## Example
+## Local Store Example
 
 ```go
 store := shardlet.MustNewStore(64, []string{"g1", "g2", "g3"})
@@ -50,50 +58,9 @@ if err != nil {
 fmt.Println(value.Value, value.ShardID, value.GroupID)
 ```
 
-## Design
+## TCP Client Example
 
-Shardlet splits keys across a fixed number of logical shards using FNV-1a hashing. Each shard owns its own map and lock, so unrelated keys can be read and written concurrently without a global bottleneck.
-
-Shard groups are represented as ownership labels. `Rebalance` updates shard ownership while clients continue operating. The current implementation keeps storage local and in-memory, which makes it easy to test the concurrency model before adding RPC replication.
-
-## Current Features
-
-- Concurrent `Put`, `Get`, and `Delete`
-- TCP API between clients and shard groups
-- Raft-backed replication per shard group with majority commit
-- TTL-based expiration
-- Sorted range scans
-- Point-in-time snapshots
-- Shard and cluster stats
-- Concurrent rebalancing demo
-- Unit tests, race tests, and benchmark target
-
-## Roadmap
-
-These are natural next steps if this project grows toward the full distributed systems version:
-
-- optional gRPC API and protobuf schema
-- randomized Raft elections, heartbeats, and durable log persistence
-- controller process with persisted current and next configs
-- idempotent shard migration protocol
-- exactly-once client request handling
-- Prometheus metrics for latency, shard movement, and lock contention
-
-## Resume Bullet
-
-Built **Shardlet**, a Go-based sharded key/value store prototype with per-shard locking, TCP client/server APIs, Raft-style majority replication per shard group, concurrent client workloads, live shard-group rebalancing, TTL expiration, snapshots, range scans, tests, benchmarks, and race-detector validation.
-
-## TCP API
-
-Shardlet exposes a small TCP protocol in `pkg/shardletnet`. Each request and response is a newline-delimited JSON object, which keeps the protocol easy to inspect with tools like `nc`.
-
-Start a shard group server:
-
-```bash
-go run ./cmd/shardlet -listen 127.0.0.1:7070
-```
-
-Use the Go client:
+Shardlet's TCP protocol uses one newline-delimited JSON request per operation. The Go client serializes requests on a connection, while the server handles many client connections concurrently.
 
 ```go
 client, err := shardletnet.Dial(ctx, "127.0.0.1:7070", shardletnet.ClientOptions{})
@@ -104,12 +71,13 @@ defer client.Close()
 
 _, _ = client.Put("user:42", "Jorge", shardlet.PutOptions{})
 value, _ := client.Get("user:42")
+
 fmt.Println(value.Value)
 ```
 
-## Replicated Shard Groups
+## Replicated Shard Group Example
 
-`pkg/raftgroup` adds an in-memory Raft-style replicated state machine around `pkg/shardlet.Store`. Writes are appended to a leader log, replicated to online replicas, committed only after a majority acknowledges, and then applied to each replica's local shard store.
+`pkg/raftgroup` wraps `pkg/shardlet.Store` with a Raft-style replicated log. Writes go through the current leader, append to online replicas, commit after a majority acknowledges, and then apply to each replica's local store.
 
 ```go
 group := raftgroup.MustNewGroup("g1", []string{"n1", "n2", "n3"}, 64)
@@ -123,4 +91,58 @@ value, _ := group.Get("user:42")
 fmt.Println(value.Value)
 ```
 
-The package includes tests for majority commit, rejected writes without quorum, offline follower catch-up, leader failover, and concurrent replicated writes.
+## Testing
+
+```bash
+go test ./...
+go test -race ./...
+go test -bench=. -benchmem ./pkg/shardlet
+```
+
+The tests cover:
+
+- concurrent local reads, writes, deletes, and rebalancing
+- TTL expiration and cleanup
+- sorted range scans
+- TCP `Put`, `Get`, `Delete`, `Range`, `Stats`, and `Rebalance`
+- concurrent TCP clients
+- majority commit and no-quorum rejection
+- offline follower catch-up
+- deterministic leader failover
+- concurrent replicated writes
+
+## Scope
+
+Shardlet currently focuses on the core mechanics that are useful for demonstrating Go and distributed-systems fundamentals.
+
+Implemented:
+
+- local sharded storage engine
+- TCP client/server protocol
+- in-memory replicated shard group
+- majority-based write commit
+- deterministic failover hooks
+- testable concurrency behavior
+
+Not yet implemented:
+
+- randomized Raft elections
+- heartbeat timers
+- durable write-ahead log persistence
+- networked AppendEntries RPCs between replicas
+- controller process with persisted current and next configs
+- idempotent shard migration protocol
+
+## Roadmap
+
+- Add a durable WAL and snapshots for `raftgroup`.
+- Replace deterministic leader promotion with Raft elections and heartbeats.
+- Add networked replica-to-replica AppendEntries.
+- Add a controller process that stores current and next shard configurations.
+- Implement idempotent shard freeze, install, and delete migration.
+- Add exactly-once client request handling.
+- Add Prometheus metrics for latency, lock contention, quorum failures, and shard movement.
+
+## Resume Bullet
+
+Built **Shardlet**, a Go-based sharded key/value store prototype with per-shard locking, TCP client/server APIs, Raft-style majority replication per shard group, concurrent client workloads, live shard-group rebalancing, TTL expiration, snapshots, range scans, tests, benchmarks, and race-detector validation.
