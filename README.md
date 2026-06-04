@@ -43,6 +43,84 @@ go run ./cmd/shardlet -listen 127.0.0.1:7070
 | `pkg/raftgroup` | In-memory Raft-style replicated shard group built around `shardlet.Store`. |
 | `cmd/shardlet` | Demo workload runner and TCP server entrypoint. |
 
+## Walkthrough: How Shardlet Works
+
+This example shows the main pieces working together. It starts with the local sharded store, moves shard ownership, then uses a replicated shard group to demonstrate majority commit, failover, and follower catch-up.
+
+```go
+package main
+
+import (
+    "errors"
+    "fmt"
+
+    "github.com/JorgeV92/shardlet/pkg/raftgroup"
+    "github.com/JorgeV92/shardlet/pkg/shardlet"
+)
+
+func main() {
+    // 1. A Store spreads keys across logical shards. Each shard has its own lock,
+    // so unrelated keys can be read and written concurrently.
+    store := shardlet.MustNewStore(8, []string{"g1", "g2"})
+
+    alice, _ := store.Put("user:alice", "online", shardlet.PutOptions{})
+    bob, _ := store.Put("user:bob", "offline", shardlet.PutOptions{})
+
+    fmt.Printf("alice shard=%d group=%s\n", alice.ShardID, alice.GroupID)
+    fmt.Printf("bob   shard=%d group=%s\n", bob.ShardID, bob.GroupID)
+
+    // 2. Rebalance changes shard ownership metadata while preserving data.
+    // In the full distributed version, this is where shard migration RPCs belong.
+    _ = store.Rebalance([]string{"g1", "g2", "g3"})
+
+    stats := store.Stats()
+    fmt.Printf("local store: shards=%d groups=%d keys=%d\n",
+        stats.ShardCount, stats.GroupCount, stats.KeyCount)
+
+    // 3. A raftgroup models one replicated shard group. Writes go to the
+    // current leader, are appended to online replicas, and commit only after
+    // a majority acknowledges the log entry.
+    group := raftgroup.MustNewGroup("g1", []string{"n1", "n2", "n3"}, 8)
+
+    _, _ = group.Put("cart:42", "created", shardlet.PutOptions{})
+
+    // 4. A follower can go offline. With 2 of 3 replicas still online, writes
+    // continue because the group still has a majority.
+    _ = group.SetOnline("n3", false)
+    _, _ = group.Put("cart:42", "paid", shardlet.PutOptions{})
+
+    // 5. If the leader is lost, writes fail until another caught-up replica
+    // is promoted. The current implementation uses deterministic promotion
+    // instead of randomized Raft elections.
+    _ = group.SetOnline("n1", false)
+    if _, err := group.Put("cart:42", "shipped", shardlet.PutOptions{}); err != nil {
+        fmt.Println("write blocked:", err)
+    }
+
+    _ = group.SetOnline("n3", true)
+    _ = group.PromoteLeader("n2")
+    _, _ = group.Put("cart:42", "shipped", shardlet.PutOptions{})
+
+    // 6. If quorum is lost, writes are rejected. This prevents a minority from
+    // committing divergent state.
+    _ = group.SetOnline("n3", false)
+    if _, err := group.Put("cart:42", "delivered", shardlet.PutOptions{}); errors.Is(err, raftgroup.ErrNoQuorum) {
+        fmt.Println("write rejected without quorum")
+    }
+
+    // 7. When replicas return, they catch up from the committed log.
+    _ = group.SetOnline("n1", true)
+    _ = group.SetOnline("n3", true)
+
+    value, _ := group.Get("cart:42")
+    raftStats := group.Stats()
+    fmt.Printf("replicated value=%q leader=%s commitIndex=%d\n",
+        value.Value, raftStats.LeaderID, raftStats.CommitIndex)
+}
+```
+
+The important idea is that `pkg/shardlet` owns local concurrency and key placement, while `pkg/raftgroup` owns replicated write ordering. `pkg/shardletnet` can expose the store over TCP for remote clients, and future work can connect those network boundaries to replica-to-replica Raft RPCs.
+
 ## Local Store Example
 
 ```go
