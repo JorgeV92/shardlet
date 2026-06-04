@@ -10,6 +10,7 @@ Shardlet is meant to show practical Go experience beyond syntax:
 
 - `sync.RWMutex` based per-shard concurrency
 - goroutine-heavy client workloads
+- TCP client/server APIs using newline-delimited JSON
 - race-detector friendly shared-state design
 - deterministic shard placement
 - live shard-group rebalancing while clients read and write
@@ -21,6 +22,7 @@ Shardlet is meant to show practical Go experience beyond syntax:
 go test ./...
 go test -race ./...
 go run ./cmd/shardlet -workers 32 -ops 100000
+go run ./cmd/shardlet -listen 127.0.0.1:7070
 ```
 
 Or use the Makefile:
@@ -56,6 +58,7 @@ Shard groups are represented as ownership labels. `Rebalance` updates shard owne
 ## Current Features
 
 - Concurrent `Put`, `Get`, and `Delete`
+- TCP API between clients and shard groups
 - TTL-based expiration
 - Sorted range scans
 - Point-in-time snapshots
@@ -67,7 +70,7 @@ Shard groups are represented as ownership labels. `Rebalance` updates shard owne
 
 These are natural next steps if this project grows toward the full distributed systems version:
 
-- TCP or gRPC API between clients and shard groups
+- optional gRPC API and protobuf schema
 - Raft-backed replication per shard group
 - controller process with persisted current and next configs
 - idempotent shard migration protocol
@@ -76,4 +79,28 @@ These are natural next steps if this project grows toward the full distributed s
 
 ## Resume Bullet
 
-Built **Shardlet**, a Go-based sharded key/value store prototype with per-shard locking, concurrent client workloads, live shard-group rebalancing, TTL expiration, snapshots, range scans, tests, benchmarks, and race-detector validation.
+Built **Shardlet**, a Go-based sharded key/value store prototype with per-shard locking, TCP client/server APIs, concurrent client workloads, live shard-group rebalancing, TTL expiration, snapshots, range scans, tests, benchmarks, and race-detector validation.
+
+## TCP API
+
+Shardlet exposes a small TCP protocol in `pkg/shardletnet`. Each request and response is a newline-delimited JSON object, which keeps the protocol easy to inspect with tools like `nc`.
+
+Start a shard group server:
+
+```bash
+go run ./cmd/shardlet -listen 127.0.0.1:7070
+```
+
+Use the Go client:
+
+```go
+client, err := shardletnet.Dial(ctx, "127.0.0.1:7070", shardletnet.ClientOptions{})
+if err != nil {
+    // handle dial failure
+}
+defer client.Close()
+
+_, _ = client.Put("user:42", "Jorge", shardlet.PutOptions{})
+value, _ := client.Get("user:42")
+fmt.Println(value.Value)
+```

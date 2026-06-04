@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"log"
@@ -11,15 +12,21 @@ import (
 	"time"
 
 	"github.com/JorgeV92/shardlet/pkg/shardlet"
+	"github.com/JorgeV92/shardlet/pkg/shardletnet"
 )
 
 func main() {
 	shards := flag.Int("shards", 64, "number of logical shards")
 	workers := flag.Int("workers", runtime.NumCPU()*4, "concurrent client workers")
 	ops := flag.Int("ops", 100_000, "total put/get operations")
+	listen := flag.String("listen", "", "TCP address for shard group API, for example 127.0.0.1:7070")
 	flag.Parse()
 
 	store := shardlet.MustNewStore(*shards, []string{"g1", "g2", "g3"})
+	if *listen != "" {
+		serve(*listen, store)
+		return
+	}
 	start := time.Now()
 
 	var done atomic.Int64
@@ -66,4 +73,13 @@ func main() {
 	fmt.Printf("Shardlet completed %d put/get pairs with %d workers in %s\n", *ops, *workers, elapsed.Round(time.Millisecond))
 	fmt.Printf("Throughput: %.0f ops/sec\n", float64(*ops*2)/elapsed.Seconds())
 	fmt.Printf("Shards: %d  Groups: %d  Keys: %d\n", stats.ShardCount, stats.GroupCount, stats.KeyCount)
+}
+
+func serve(addr string, store *shardlet.Store) {
+	srv, err := shardletnet.Listen(context.Background(), addr, store, shardletnet.ServerOptions{})
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Printf("Shardlet TCP API listening on %s\n", srv.Addr())
+	select {}
 }
