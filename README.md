@@ -11,6 +11,7 @@ Shardlet is meant to show practical Go experience beyond syntax:
 - `sync.RWMutex` based per-shard concurrency
 - goroutine-heavy client workloads
 - TCP client/server APIs using newline-delimited JSON
+- Raft-style replicated logs per shard group
 - race-detector friendly shared-state design
 - deterministic shard placement
 - live shard-group rebalancing while clients read and write
@@ -59,6 +60,7 @@ Shard groups are represented as ownership labels. `Rebalance` updates shard owne
 
 - Concurrent `Put`, `Get`, and `Delete`
 - TCP API between clients and shard groups
+- Raft-backed replication per shard group with majority commit
 - TTL-based expiration
 - Sorted range scans
 - Point-in-time snapshots
@@ -71,7 +73,7 @@ Shard groups are represented as ownership labels. `Rebalance` updates shard owne
 These are natural next steps if this project grows toward the full distributed systems version:
 
 - optional gRPC API and protobuf schema
-- Raft-backed replication per shard group
+- randomized Raft elections, heartbeats, and durable log persistence
 - controller process with persisted current and next configs
 - idempotent shard migration protocol
 - exactly-once client request handling
@@ -79,7 +81,7 @@ These are natural next steps if this project grows toward the full distributed s
 
 ## Resume Bullet
 
-Built **Shardlet**, a Go-based sharded key/value store prototype with per-shard locking, TCP client/server APIs, concurrent client workloads, live shard-group rebalancing, TTL expiration, snapshots, range scans, tests, benchmarks, and race-detector validation.
+Built **Shardlet**, a Go-based sharded key/value store prototype with per-shard locking, TCP client/server APIs, Raft-style majority replication per shard group, concurrent client workloads, live shard-group rebalancing, TTL expiration, snapshots, range scans, tests, benchmarks, and race-detector validation.
 
 ## TCP API
 
@@ -104,3 +106,21 @@ _, _ = client.Put("user:42", "Jorge", shardlet.PutOptions{})
 value, _ := client.Get("user:42")
 fmt.Println(value.Value)
 ```
+
+## Replicated Shard Groups
+
+`pkg/raftgroup` adds an in-memory Raft-style replicated state machine around `pkg/shardlet.Store`. Writes are appended to a leader log, replicated to online replicas, committed only after a majority acknowledges, and then applied to each replica's local shard store.
+
+```go
+group := raftgroup.MustNewGroup("g1", []string{"n1", "n2", "n3"}, 64)
+
+_, _ = group.Put("user:42", "Jorge", shardlet.PutOptions{})
+
+_ = group.SetOnline("n1", false)
+_ = group.PromoteLeader("n2")
+
+value, _ := group.Get("user:42")
+fmt.Println(value.Value)
+```
+
+The package includes tests for majority commit, rejected writes without quorum, offline follower catch-up, leader failover, and concurrent replicated writes.
