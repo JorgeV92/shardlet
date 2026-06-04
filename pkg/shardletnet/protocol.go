@@ -4,7 +4,7 @@ import (
 	"errors"
 	"time"
 
-	"github.com/JorgeV92/shardlet/pkg/shardlet"
+	"shardlet/pkg/shardlet"
 )
 
 const ProtocolVersion = "shardlet.v1"

@@ -54,8 +54,8 @@ import (
     "errors"
     "fmt"
 
-    "github.com/JorgeV92/shardlet/pkg/raftgroup"
-    "github.com/JorgeV92/shardlet/pkg/shardlet"
+    "shardlet/pkg/raftgroup"
+    "shardlet/pkg/shardlet"
 )
 
 func main() {

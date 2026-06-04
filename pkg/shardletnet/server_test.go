@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/JorgeV92/shardlet/pkg/shardlet"
+	"shardlet/pkg/shardlet"
 )
 
 func startTestServer(t *testing.T) (*Server, *Client) {

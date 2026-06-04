@@ -6,7 +6,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/JorgeV92/shardlet/pkg/shardlet"
+	"shardlet/pkg/shardlet"
 )
 
 func TestReplicatesCommittedWriteToMajority(t *testing.T) {

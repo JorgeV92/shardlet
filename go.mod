@@ -1,3 +1,3 @@
-module github.com/JorgeV92/shardlet
+module shardlet
 
 go 1.23

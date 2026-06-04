@@ -11,8 +11,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/JorgeV92/shardlet/pkg/shardlet"
-	"github.com/JorgeV92/shardlet/pkg/shardletnet"
+	"shardlet/pkg/shardlet"
+	"shardlet/pkg/shardletnet"
 )
 
 func main() {

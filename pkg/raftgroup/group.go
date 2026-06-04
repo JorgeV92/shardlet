@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/JorgeV92/shardlet/pkg/shardlet"
+	"shardlet/pkg/shardlet"
 )
 
 var (

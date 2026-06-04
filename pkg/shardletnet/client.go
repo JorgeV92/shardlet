@@ -10,7 +10,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/JorgeV92/shardlet/pkg/shardlet"
+	"shardlet/pkg/shardlet"
 )
 
 type Client struct {
