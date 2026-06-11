@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"shardlet/pkg/raftgroup"
 	"shardlet/pkg/shardlet"
 )
 
@@ -35,6 +36,32 @@ func startTestServer(t *testing.T) (*Server, *Client) {
 		}
 	})
 	return srv, client
+}
+
+func startTestRaftGroupServer(t *testing.T) (*Server, *Client, *raftgroup.Group) {
+	t.Helper()
+
+	group := raftgroup.MustNewGroup("g1", []string{"n1", "n2", "n3"}, 16)
+	srv, err := ListenRaftGroup(context.Background(), "127.0.0.1:0", group, ServerOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := srv.Close(); err != nil {
+			t.Logf("server close: %v", err)
+		}
+	})
+
+	client, err := Dial(context.Background(), srv.Addr().String(), ClientOptions{Timeout: time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := client.Close(); err != nil {
+			t.Logf("client close: %v", err)
+		}
+	})
+	return srv, client, group
 }
 
 func TestTCPPutGetDelete(t *testing.T) {
@@ -141,5 +168,71 @@ func TestTCPTTLRemoteError(t *testing.T) {
 	time.Sleep(25 * time.Millisecond)
 	if _, err := client.Get("session"); !errors.Is(err, ErrRemote) {
 		t.Fatalf("Get expired err = %v, want %v", err, ErrRemote)
+	}
+}
+
+func TestTCPRaftGroupPutGetStatsAndRange(t *testing.T) {
+	_, client, group := startTestRaftGroupServer(t)
+
+	if _, err := client.Put("user:2", "ana", shardlet.PutOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	written, err := client.Put("user:1", "jorge", shardlet.PutOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	read, err := client.Get("user:1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if read.Value != "jorge" || read.ShardID != written.ShardID {
+		t.Fatalf("read = %+v, written = %+v", read, written)
+	}
+
+	values, err := client.Range("user:", "user;")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(values) != 2 || values[0].Key != "user:1" || values[1].Key != "user:2" {
+		t.Fatalf("Range = %+v", values)
+	}
+
+	stats, err := client.Stats()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.KeyCount != 2 || stats.GroupCount != 1 {
+		t.Fatalf("Stats = %+v", stats)
+	}
+
+	raftStats, err := client.RaftStats()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if raftStats.CommitIndex != 2 || raftStats.LeaderID != group.LeaderID() {
+		t.Fatalf("RaftStats = %+v", raftStats)
+	}
+}
+
+func TestTCPRaftGroupNoQuorumRemoteError(t *testing.T) {
+	_, client, group := startTestRaftGroupServer(t)
+
+	if err := group.SetOnline("n2", false); err != nil {
+		t.Fatal(err)
+	}
+	if err := group.SetOnline("n3", false); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := client.Put("blocked", "value", shardlet.PutOptions{}); !errors.Is(err, ErrRemote) {
+		t.Fatalf("Put without quorum err = %v, want %v", err, ErrRemote)
+	}
+}
+
+func TestTCPStoreRaftStatsUnavailable(t *testing.T) {
+	_, client := startTestServer(t)
+
+	if _, err := client.RaftStats(); !errors.Is(err, ErrRemote) {
+		t.Fatalf("RaftStats err = %v, want %v", err, ErrRemote)
 	}
 }

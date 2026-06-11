@@ -177,6 +177,20 @@ func (g *Group) Get(key string) (shardlet.Value, error) {
 	return leader.store.Get(key)
 }
 
+func (g *Group) Range(low, high string) ([]shardlet.Value, error) {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+
+	leader := g.replicas[g.leaderID]
+	if leader == nil {
+		return nil, ErrUnknownReplica
+	}
+	if !leader.online {
+		return nil, ErrReplicaOffline
+	}
+	return leader.store.Range(low, high), nil
+}
+
 func (g *Group) Delete(key string) (bool, error) {
 	before, getErr := g.Get(key)
 	err := g.commit(LogEntry{Op: OpDelete, Key: key})
@@ -253,6 +267,20 @@ func (g *Group) Stats() GroupStats {
 		})
 	}
 	return stats
+}
+
+func (g *Group) StoreStats() (shardlet.ClusterStats, error) {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+
+	leader := g.replicas[g.leaderID]
+	if leader == nil {
+		return shardlet.ClusterStats{}, ErrUnknownReplica
+	}
+	if !leader.online {
+		return shardlet.ClusterStats{}, ErrReplicaOffline
+	}
+	return leader.store.Stats(), nil
 }
 
 func (g *Group) ReplicaGet(replicaID, key string) (shardlet.Value, error) {

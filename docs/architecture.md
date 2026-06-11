@@ -32,7 +32,7 @@ shardID = fnv64a(key) % shardCount
 
 ## TCP Layer
 
-`pkg/shardletnet` uses newline-delimited JSON over TCP.
+`pkg/shardletnet` uses newline-delimited JSON over TCP. The server is backed by a small storage interface, so the same protocol can serve either a local `shardlet.Store` or a replicated `raftgroup.Group`.
 
 Supported operations:
 
@@ -41,9 +41,12 @@ Supported operations:
 - `delete`
 - `range`
 - `stats`
+- `raft_stats`
 - `rebalance`
 
 The server accepts connections in a loop and starts one goroutine per connection. A single client serializes requests on its TCP connection, while multiple clients can operate concurrently through separate connections.
+
+`Listen` exposes a local store. `ListenRaftGroup` exposes a replicated group; `put`, `delete`, and `rebalance` go through majority commit before the server replies. The regular `stats` operation returns the leader store's `ClusterStats`, while `raft_stats` returns replication metadata such as leader id, term, commit index, and replica state.
 
 The protocol is intentionally plain text so it is easy to inspect and debug. A future gRPC/protobuf API can be added without changing the storage layer.
 
@@ -118,6 +121,7 @@ The test suite covers:
 - sorted range scans
 - concurrent local operations during rebalancing
 - TCP client/server operations
+- TCP-backed raftgroup operations
 - concurrent TCP clients
 - TCP TTL error propagation
 - majority commit

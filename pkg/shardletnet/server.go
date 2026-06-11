@@ -12,11 +12,26 @@ import (
 	"sync"
 	"time"
 
+	"shardlet/pkg/raftgroup"
 	"shardlet/pkg/shardlet"
 )
 
+type Backend interface {
+	Put(key, value string, opts shardlet.PutOptions) (shardlet.Value, error)
+	Get(key string) (shardlet.Value, error)
+	Delete(key string) (bool, error)
+	Range(low, high string) ([]shardlet.Value, error)
+	Stats() (shardlet.ClusterStats, error)
+	Rebalance(groups []string) error
+}
+
+type RaftStatsBackend interface {
+	Backend
+	RaftStats() raftgroup.GroupStats
+}
+
 type Server struct {
-	store    *shardlet.Store
+	backend  Backend
 	listener net.Listener
 	logger   *slog.Logger
 
@@ -35,7 +50,20 @@ func Listen(ctx context.Context, addr string, store *shardlet.Store, opts Server
 	if store == nil {
 		return nil, errors.New("nil store")
 	}
+	return ListenBackend(ctx, addr, storeBackend{store: store}, opts)
+}
 
+func ListenRaftGroup(ctx context.Context, addr string, group *raftgroup.Group, opts ServerOptions) (*Server, error) {
+	if group == nil {
+		return nil, errors.New("nil raft group")
+	}
+	return ListenBackend(ctx, addr, raftGroupBackend{group: group}, opts)
+}
+
+func ListenBackend(ctx context.Context, addr string, backend Backend, opts ServerOptions) (*Server, error) {
+	if backend == nil {
+		return nil, errors.New("nil backend")
+	}
 	listener, err := net.Listen("tcp", addr)
 	if err != nil {
 		return nil, err
@@ -46,7 +74,7 @@ func Listen(ctx context.Context, addr string, store *shardlet.Store, opts Server
 	}
 
 	srv := &Server{
-		store:    store,
+		backend:  backend,
 		listener: listener,
 		logger:   logger,
 		done:     make(chan struct{}),
@@ -157,30 +185,44 @@ func (s *Server) apply(req Request) Response {
 
 	switch req.Op {
 	case OpPut:
-		value, err := s.store.Put(req.Key, req.Value, shardlet.PutOptions{TTL: req.TTL})
+		value, err := s.backend.Put(req.Key, req.Value, shardlet.PutOptions{TTL: req.TTL})
 		if err != nil {
 			return fail(req, err)
 		}
 		resp.Value = &value
 	case OpGet:
-		value, err := s.store.Get(req.Key)
+		value, err := s.backend.Get(req.Key)
 		if err != nil {
 			return fail(req, err)
 		}
 		resp.Value = &value
 	case OpDelete:
-		deleted, err := s.store.Delete(req.Key)
+		deleted, err := s.backend.Delete(req.Key)
 		if err != nil {
 			return fail(req, err)
 		}
 		resp.Deleted = deleted
 	case OpRange:
-		resp.Values = s.store.Range(req.Low, req.High)
+		values, err := s.backend.Range(req.Low, req.High)
+		if err != nil {
+			return fail(req, err)
+		}
+		resp.Values = values
 	case OpStats:
-		stats := s.store.Stats()
+		stats, err := s.backend.Stats()
+		if err != nil {
+			return fail(req, err)
+		}
 		resp.Stats = &stats
+	case OpRaftStats:
+		backend, ok := s.backend.(RaftStatsBackend)
+		if !ok {
+			return fail(req, errors.New("raft stats unavailable"))
+		}
+		stats := backend.RaftStats()
+		resp.Raft = &stats
 	case OpRebalance:
-		if err := s.store.Rebalance(req.Groups); err != nil {
+		if err := s.backend.Rebalance(req.Groups); err != nil {
 			return fail(req, err)
 		}
 	default:
@@ -204,4 +246,64 @@ func deadline(timeout time.Duration) time.Time {
 		return time.Time{}
 	}
 	return time.Now().Add(timeout)
+}
+
+type storeBackend struct {
+	store *shardlet.Store
+}
+
+func (b storeBackend) Put(key, value string, opts shardlet.PutOptions) (shardlet.Value, error) {
+	return b.store.Put(key, value, opts)
+}
+
+func (b storeBackend) Get(key string) (shardlet.Value, error) {
+	return b.store.Get(key)
+}
+
+func (b storeBackend) Delete(key string) (bool, error) {
+	return b.store.Delete(key)
+}
+
+func (b storeBackend) Range(low, high string) ([]shardlet.Value, error) {
+	return b.store.Range(low, high), nil
+}
+
+func (b storeBackend) Stats() (shardlet.ClusterStats, error) {
+	return b.store.Stats(), nil
+}
+
+func (b storeBackend) Rebalance(groups []string) error {
+	return b.store.Rebalance(groups)
+}
+
+type raftGroupBackend struct {
+	group *raftgroup.Group
+}
+
+func (b raftGroupBackend) Put(key, value string, opts shardlet.PutOptions) (shardlet.Value, error) {
+	return b.group.Put(key, value, opts)
+}
+
+func (b raftGroupBackend) Get(key string) (shardlet.Value, error) {
+	return b.group.Get(key)
+}
+
+func (b raftGroupBackend) Delete(key string) (bool, error) {
+	return b.group.Delete(key)
+}
+
+func (b raftGroupBackend) Range(low, high string) ([]shardlet.Value, error) {
+	return b.group.Range(low, high)
+}
+
+func (b raftGroupBackend) Stats() (shardlet.ClusterStats, error) {
+	return b.group.StoreStats()
+}
+
+func (b raftGroupBackend) Rebalance(groups []string) error {
+	return b.group.Rebalance(groups)
+}
+
+func (b raftGroupBackend) RaftStats() raftgroup.GroupStats {
+	return b.group.Stats()
 }

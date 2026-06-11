@@ -33,6 +33,12 @@ Start a TCP shard group API:
 go run ./cmd/shardlet -listen 127.0.0.1:7070
 ```
 
+Start a TCP API backed by a replicated raft group:
+
+```bash
+go run ./cmd/shardlet -listen 127.0.0.1:7070 -raft -replicas n1,n2,n3
+```
+
 ## Packages
 
 | Package | Purpose |
@@ -128,6 +134,7 @@ Use the examples below based on what you want to exercise:
 | --- | --- |
 | Local store | You want shard placement, TTLs, range scans, and local concurrency. |
 | TCP client | You want to access a shardlet store from another process. |
+| TCP raft group | You want remote clients to write through majority replication. |
 | Replicated shard group | You want majority commit, follower catch-up, and failover behavior. |
 | Durable raftgroup log | You want committed replicated writes to survive process restart. |
 
@@ -163,6 +170,31 @@ _, _ = client.Put("user:42", "Jorge", shardlet.PutOptions{})
 value, _ := client.Get("user:42")
 
 fmt.Println(value.Value)
+```
+
+### TCP Raft Group
+
+The same TCP client can talk to a replicated shard group. Writes still use the `put` operation, but the server commits them through `raftgroup.Group` before replying.
+
+Runnable version: `go run ./examples/tcp_raft_group`
+
+```go
+group := raftgroup.MustNewGroup("g1", []string{"n1", "n2", "n3"}, 16)
+
+server, err := shardletnet.ListenRaftGroup(ctx, "127.0.0.1:0", group, shardletnet.ServerOptions{})
+if err != nil {
+    // handle listen failure
+}
+defer server.Close()
+
+client, _ := shardletnet.Dial(ctx, server.Addr().String(), shardletnet.ClientOptions{})
+defer client.Close()
+
+_, _ = client.Put("cart:42", "paid", shardlet.PutOptions{})
+value, _ := client.Get("cart:42")
+raftStats, _ := client.RaftStats()
+
+fmt.Println(value.Value, raftStats.LeaderID, raftStats.CommitIndex)
 ```
 
 ### Replicated Shard Group
@@ -233,6 +265,7 @@ The tests cover:
 - sorted range scans
 - TCP `Put`, `Get`, `Delete`, `Range`, `Stats`, and `Rebalance`
 - concurrent TCP clients
+- TCP-backed raftgroup writes and raft stats
 - majority commit and no-quorum rejection
 - offline follower catch-up
 - in-memory and file-backed raftgroup log restore
@@ -251,6 +284,7 @@ Implemented:
 
 - local sharded storage engine
 - TCP client/server protocol
+- TCP API for replicated shard groups
 - in-memory replicated shard group
 - pluggable raftgroup log storage
 - file-backed committed log restore

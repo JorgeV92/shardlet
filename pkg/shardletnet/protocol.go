@@ -4,6 +4,7 @@ import (
 	"errors"
 	"time"
 
+	"shardlet/pkg/raftgroup"
 	"shardlet/pkg/shardlet"
 )
 
@@ -19,6 +20,7 @@ const (
 	OpDelete    Operation = "delete"
 	OpRange     Operation = "range"
 	OpStats     Operation = "stats"
+	OpRaftStats Operation = "raft_stats"
 	OpRebalance Operation = "rebalance"
 )
 
@@ -43,4 +45,5 @@ type Response struct {
 	Values  []shardlet.Value       `json:"values,omitempty"`
 	Deleted bool                   `json:"deleted,omitempty"`
 	Stats   *shardlet.ClusterStats `json:"stats,omitempty"`
+	Raft    *raftgroup.GroupStats  `json:"raft,omitempty"`
 }

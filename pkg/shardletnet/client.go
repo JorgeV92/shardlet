@@ -10,6 +10,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"shardlet/pkg/raftgroup"
 	"shardlet/pkg/shardlet"
 )
 
@@ -87,6 +88,14 @@ func (c *Client) Stats() (shardlet.ClusterStats, error) {
 		return shardlet.ClusterStats{}, err
 	}
 	return *resp.Stats, nil
+}
+
+func (c *Client) RaftStats() (raftgroup.GroupStats, error) {
+	resp, err := c.roundTrip(Request{Op: OpRaftStats})
+	if err != nil {
+		return raftgroup.GroupStats{}, err
+	}
+	return *resp.Raft, nil
 }
 
 func (c *Client) Rebalance(groups []string) error {

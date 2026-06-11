@@ -7,10 +7,12 @@ import (
 	"log"
 	"math/rand"
 	"runtime"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"shardlet/pkg/raftgroup"
 	"shardlet/pkg/shardlet"
 	"shardlet/pkg/shardletnet"
 )
@@ -20,11 +22,17 @@ func main() {
 	workers := flag.Int("workers", runtime.NumCPU()*4, "concurrent client workers")
 	ops := flag.Int("ops", 100_000, "total put/get operations")
 	listen := flag.String("listen", "", "TCP address for shard group API, for example 127.0.0.1:7070")
+	raft := flag.Bool("raft", false, "serve a replicated raftgroup over TCP when listen is set")
+	replicas := flag.String("replicas", "n1,n2,n3", "comma-separated raft replica ids")
 	flag.Parse()
 
 	store := shardlet.MustNewStore(*shards, []string{"g1", "g2", "g3"})
 	if *listen != "" {
-		serve(*listen, store)
+		if *raft {
+			serveRaftGroup(*listen, *replicas, *shards)
+			return
+		}
+		serveStore(*listen, store)
 		return
 	}
 	start := time.Now()
@@ -75,11 +83,27 @@ func main() {
 	fmt.Printf("Shards: %d  Groups: %d  Keys: %d\n", stats.ShardCount, stats.GroupCount, stats.KeyCount)
 }
 
-func serve(addr string, store *shardlet.Store) {
+func serveStore(addr string, store *shardlet.Store) {
 	srv, err := shardletnet.Listen(context.Background(), addr, store, shardletnet.ServerOptions{})
 	if err != nil {
 		log.Fatal(err)
 	}
 	fmt.Printf("Shardlet TCP API listening on %s\n", srv.Addr())
+	select {}
+}
+
+func serveRaftGroup(addr, replicaList string, shards int) {
+	replicaIDs := strings.Split(replicaList, ",")
+	group := raftgroup.MustNewGroup("g1", replicaIDs, shards)
+	srv, err := shardletnet.ListenRaftGroup(context.Background(), addr, group, shardletnet.ServerOptions{})
+	if err != nil {
+		log.Fatal(err)
+	}
+	stats := group.Stats()
+	fmt.Printf("Shardlet raftgroup TCP API listening on %s leader=%s replicas=%d\n",
+		srv.Addr(),
+		stats.LeaderID,
+		len(stats.Replicas),
+	)
 	select {}
 }
