@@ -39,7 +39,7 @@ go run ./cmd/shardlet -listen 127.0.0.1:7070
 | --- | --- |
 | `pkg/shardlet` | In-memory sharded key/value store with per-shard locking. |
 | `pkg/shardletnet` | TCP JSON client/server API for remote shard group operations. |
-| `pkg/raftgroup` | In-memory Raft-style replicated shard group built around `shardlet.Store`. |
+| `pkg/raftgroup` | Raft-style replicated shard group with pluggable in-memory or file-backed logs. |
 | `cmd/shardlet` | Demo workload runner and TCP server entrypoint. |
 
 ## Walkthrough: How Shardlet Works
@@ -120,7 +120,20 @@ func main() {
 
 The important idea is that `pkg/shardlet` owns local concurrency and key placement, while `pkg/raftgroup` owns replicated write ordering. `pkg/shardletnet` can expose the store over TCP for remote clients, and future work can connect those network boundaries to replica-to-replica Raft RPCs.
 
-## Local Store Example
+## Shardlet Examples
+
+Use the examples below based on what you want to exercise:
+
+| Example | Use when |
+| --- | --- |
+| Local store | You want shard placement, TTLs, range scans, and local concurrency. |
+| TCP client | You want to access a shardlet store from another process. |
+| Replicated shard group | You want majority commit, follower catch-up, and failover behavior. |
+| Durable raftgroup log | You want committed replicated writes to survive process restart. |
+
+### Local Store
+
+Runnable version: `go run ./examples/local_store`
 
 ```go
 store := shardlet.MustNewStore(64, []string{"g1", "g2", "g3"})
@@ -135,7 +148,7 @@ if err != nil {
 fmt.Println(value.Value, value.ShardID, value.GroupID)
 ```
 
-## TCP Client Example
+### TCP Client
 
 Shardlet's TCP protocol uses one newline-delimited JSON request per operation. The Go client serializes requests on a connection, while the server handles many client connections concurrently.
 
@@ -152,9 +165,11 @@ value, _ := client.Get("user:42")
 fmt.Println(value.Value)
 ```
 
-## Replicated Shard Group Example
+### Replicated Shard Group
 
 `pkg/raftgroup` wraps `pkg/shardlet.Store` with a Raft-style replicated log. Writes go through the current leader, append to online replicas, commit after a majority acknowledges, and then apply to each replica's local store.
+
+Runnable version: `go run ./examples/replicated_group`
 
 ```go
 group := raftgroup.MustNewGroup("g1", []string{"n1", "n2", "n3"}, 64)
@@ -166,6 +181,41 @@ _ = group.PromoteLeader("n2")
 
 value, _ := group.Get("user:42")
 fmt.Println(value.Value)
+```
+
+### Durable Raftgroup Log
+
+By default, `raftgroup` uses an in-memory log store. For restartable examples, use `NewFileLogStore` and pass it with `WithLogStore`.
+
+Runnable version: `go run ./examples/durable_log`
+
+```go
+logStore, err := raftgroup.NewFileLogStore("./data/g1")
+if err != nil {
+    // handle log directory setup failure
+}
+
+group := raftgroup.MustNewGroup(
+    "g1",
+    []string{"n1", "n2", "n3"},
+    64,
+    raftgroup.WithLogStore(logStore),
+)
+
+_, _ = group.Put("order:100", "created", shardlet.PutOptions{})
+_, _ = group.Put("order:100", "paid", shardlet.PutOptions{})
+
+// Later, recreate the group with the same replica IDs and log directory.
+restoredLogs, _ := raftgroup.NewFileLogStore("./data/g1")
+restored := raftgroup.MustNewGroup(
+    "g1",
+    []string{"n1", "n2", "n3"},
+    64,
+    raftgroup.WithLogStore(restoredLogs),
+)
+
+value, _ := restored.Get("order:100")
+fmt.Println(value.Value) // paid
 ```
 
 ## Testing
@@ -185,6 +235,7 @@ The tests cover:
 - concurrent TCP clients
 - majority commit and no-quorum rejection
 - offline follower catch-up
+- in-memory and file-backed raftgroup log restore
 - deterministic leader failover
 - concurrent replicated writes
 
@@ -201,6 +252,8 @@ Implemented:
 - local sharded storage engine
 - TCP client/server protocol
 - in-memory replicated shard group
+- pluggable raftgroup log storage
+- file-backed committed log restore
 - majority-based write commit
 - deterministic failover hooks
 - testable concurrency behavior
@@ -209,14 +262,14 @@ Not yet implemented:
 
 - randomized Raft elections
 - heartbeat timers
-- durable write-ahead log persistence
+- compacted snapshot persistence
 - networked AppendEntries RPCs between replicas
 - controller process with persisted current and next configs
 - idempotent shard migration protocol
 
 ## Roadmap
 
-- Add a durable WAL and snapshots for `raftgroup`.
+- Add compacted snapshots for `raftgroup`.
 - Replace deterministic leader promotion with Raft elections and heartbeats.
 - Add networked replica-to-replica AppendEntries.
 - Add a controller process that stores current and next shard configurations.

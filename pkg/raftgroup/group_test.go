@@ -3,6 +3,7 @@ package raftgroup
 import (
 	"errors"
 	"fmt"
+	"os"
 	"sync"
 	"testing"
 
@@ -147,6 +148,101 @@ func TestConcurrentReplicatedWrites(t *testing.T) {
 	for _, replica := range stats.Replicas {
 		if replica.KeyCount != wantKeys {
 			t.Fatalf("replica %s key count = %d, want %d", replica.ID, replica.KeyCount, wantKeys)
+		}
+	}
+}
+
+func TestRestoresCommittedLogFromMemoryStore(t *testing.T) {
+	logs := NewMemoryLogStore()
+	group := MustNewGroup("g1", []string{"n1", "n2", "n3"}, 8, WithLogStore(logs))
+
+	if _, err := group.Put("user:1", "jorge", shardlet.PutOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := group.Put("user:2", "ana", shardlet.PutOptions{}); err != nil {
+		t.Fatal(err)
+	}
+
+	restored := MustNewGroup("g1", []string{"n1", "n2", "n3"}, 8, WithLogStore(logs))
+	value, err := restored.Get("user:1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if value.Value != "jorge" {
+		t.Fatalf("restored user:1 = %q, want jorge", value.Value)
+	}
+	value, err = restored.Get("user:2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if value.Value != "ana" {
+		t.Fatalf("restored user:2 = %q, want ana", value.Value)
+	}
+	if stats := restored.Stats(); stats.CommitIndex != 2 {
+		t.Fatalf("restored commit index = %d, want 2", stats.CommitIndex)
+	}
+}
+
+func TestRestoresCommittedLogFromFileStore(t *testing.T) {
+	dir := t.TempDir()
+	logs, err := NewFileLogStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	group := MustNewGroup("g1", []string{"n1", "n2", "n3"}, 8, WithLogStore(logs))
+
+	if _, err := group.Put("cart:42", "created", shardlet.PutOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := group.Put("cart:42", "paid", shardlet.PutOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if deleted, err := group.Delete("cart:42"); err != nil || !deleted {
+		t.Fatalf("Delete = %v, %v; want true, nil", deleted, err)
+	}
+
+	restoredLogs, err := NewFileLogStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	restored := MustNewGroup("g1", []string{"n1", "n2", "n3"}, 8, WithLogStore(restoredLogs))
+
+	if _, err := restored.Get("cart:42"); !errors.Is(err, shardlet.ErrKeyNotFound) {
+		t.Fatalf("restored deleted key err = %v, want %v", err, shardlet.ErrKeyNotFound)
+	}
+	if stats := restored.Stats(); stats.CommitIndex != 3 {
+		t.Fatalf("restored commit index = %d, want 3", stats.CommitIndex)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 3 {
+		t.Fatalf("file log count = %d, want 3", len(entries))
+	}
+}
+
+func TestNoQuorumWriteDoesNotPersistLogEntry(t *testing.T) {
+	logs := NewMemoryLogStore()
+	group := MustNewGroup("g1", []string{"n1", "n2", "n3"}, 8, WithLogStore(logs))
+
+	if err := group.SetOnline("n2", false); err != nil {
+		t.Fatal(err)
+	}
+	if err := group.SetOnline("n3", false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := group.Put("k1", "v1", shardlet.PutOptions{}); !errors.Is(err, ErrNoQuorum) {
+		t.Fatalf("Put err = %v, want %v", err, ErrNoQuorum)
+	}
+
+	for _, replicaID := range []string{"n1", "n2", "n3"} {
+		entries, err := logs.Load(replicaID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(entries) != 0 {
+			t.Fatalf("replica %s persisted %d entries, want 0", replicaID, len(entries))
 		}
 	}
 }

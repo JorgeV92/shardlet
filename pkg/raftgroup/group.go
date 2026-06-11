@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -67,11 +68,24 @@ type Group struct {
 	term        uint64
 	leaderID    string
 	commitIndex uint64
+	logStore    LogStore
 	replicas    map[string]*Replica
 	order       []string
 }
 
-func NewGroup(id string, replicaIDs []string, shardCount int) (*Group, error) {
+type GroupOptions struct {
+	LogStore LogStore
+}
+
+type GroupOption func(*GroupOptions)
+
+func WithLogStore(store LogStore) GroupOption {
+	return func(opts *GroupOptions) {
+		opts.LogStore = store
+	}
+}
+
+func NewGroup(id string, replicaIDs []string, shardCount int, options ...GroupOption) (*Group, error) {
 	if len(replicaIDs) == 0 {
 		return nil, ErrEmptyGroup
 	}
@@ -81,25 +95,43 @@ func NewGroup(id string, replicaIDs []string, shardCount int) (*Group, error) {
 		return nil, ErrEmptyGroup
 	}
 
+	opts := GroupOptions{LogStore: NewMemoryLogStore()}
+	for _, option := range options {
+		option(&opts)
+	}
+	if opts.LogStore == nil {
+		return nil, ErrNilLogStore
+	}
+
 	g := &Group{
 		id:       id,
 		term:     1,
 		leaderID: ids[0],
+		logStore: opts.LogStore,
 		replicas: make(map[string]*Replica, len(ids)),
 		order:    ids,
 	}
 	for _, replicaID := range ids {
+		entries, err := opts.LogStore.Load(replicaID)
+		if err != nil {
+			return nil, err
+		}
 		g.replicas[replicaID] = &Replica{
 			id:     replicaID,
 			online: true,
 			store:  shardlet.MustNewStore(shardCount, []string{id}),
+			log:    entries,
 		}
+	}
+	g.commitIndex = g.restoredCommitIndex()
+	for _, replicaID := range ids {
+		g.catchUpLocked(g.replicas[replicaID])
 	}
 	return g, nil
 }
 
-func MustNewGroup(id string, replicaIDs []string, shardCount int) *Group {
-	g, err := NewGroup(id, replicaIDs, shardCount)
+func MustNewGroup(id string, replicaIDs []string, shardCount int, options ...GroupOption) *Group {
+	g, err := NewGroup(id, replicaIDs, shardCount, options...)
 	if err != nil {
 		panic(err)
 	}
@@ -258,14 +290,15 @@ func (g *Group) commit(entry LogEntry) error {
 		if !replica.online {
 			continue
 		}
-		replica.log = append(replica.log, entry)
 		acked = append(acked, replica)
 	}
 	if len(acked) < g.majority() {
-		for _, replica := range acked {
-			replica.log = replica.log[:len(replica.log)-1]
-		}
 		return ErrNoQuorum
+	}
+	for _, replica := range acked {
+		if err := g.appendLocked(replica, entry); err != nil {
+			return err
+		}
 	}
 
 	g.commitIndex = entry.Index
@@ -285,7 +318,12 @@ func (g *Group) catchUpLocked(replica *Replica) {
 		if source == replica || len(source.log) < int(g.commitIndex) {
 			continue
 		}
-		replica.log = slices.Clone(source.log)
+		for len(replica.log) < int(g.commitIndex) {
+			next := source.log[len(replica.log)]
+			if err := g.appendLocked(replica, next); err != nil {
+				return
+			}
+		}
 		break
 	}
 	for replica.applied < g.commitIndex {
@@ -308,4 +346,68 @@ func (g *Group) applyLocked(replica *Replica, entry LogEntry) {
 		_ = replica.store.Rebalance(entry.Groups)
 	}
 	replica.applied = entry.Index
+}
+
+func (g *Group) appendLocked(replica *Replica, entry LogEntry) error {
+	if len(replica.log) >= int(entry.Index) {
+		return nil
+	}
+	if len(replica.log)+1 != int(entry.Index) {
+		return fmt.Errorf("replica %s log gap before index %d", replica.id, entry.Index)
+	}
+	if err := g.logStore.Append(replica.id, entry); err != nil {
+		return err
+	}
+	replica.log = append(replica.log, entry)
+	return nil
+}
+
+func (g *Group) restoredCommitIndex() uint64 {
+	maxIndex := 0
+	for _, replica := range g.replicas {
+		maxIndex = max(maxIndex, len(replica.log))
+	}
+
+	var commitIndex uint64
+	for index := 1; index <= maxIndex; index++ {
+		counts := make(map[string]int)
+		entries := make(map[string]LogEntry)
+		for _, replica := range g.replicas {
+			if len(replica.log) < index {
+				continue
+			}
+			entry := replica.log[index-1]
+			if entry.Index != uint64(index) {
+				continue
+			}
+			key := logEntryKey(entry)
+			counts[key]++
+			entries[key] = entry
+		}
+		var committed *LogEntry
+		for key, count := range counts {
+			if count >= g.majority() {
+				entry := entries[key]
+				committed = &entry
+				break
+			}
+		}
+		if committed == nil {
+			break
+		}
+		commitIndex = committed.Index
+	}
+	return commitIndex
+}
+
+func logEntryKey(entry LogEntry) string {
+	return fmt.Sprintf("%d\x00%d\x00%s\x00%s\x00%s\x00%d\x00%s",
+		entry.Index,
+		entry.Term,
+		entry.Op,
+		entry.Key,
+		entry.Value,
+		entry.TTL,
+		strings.Join(entry.Groups, "\x00"),
+	)
 }

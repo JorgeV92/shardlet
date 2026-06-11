@@ -1,6 +1,6 @@
 # Architecture
 
-Shardlet is organized as three layers: a local sharded storage engine, a TCP client/server API, and an in-memory Raft-style replication layer for shard groups.
+Shardlet is organized as three layers: a local sharded storage engine, a TCP client/server API, and a Raft-style replication layer for shard groups.
 
 ## Package Layout
 
@@ -8,7 +8,7 @@ Shardlet is organized as three layers: a local sharded storage engine, a TCP cli
 | --- | --- |
 | `pkg/shardlet` | Owns key placement, shard locks, TTL cleanup, range scans, snapshots, and cluster stats. |
 | `pkg/shardletnet` | Exposes a TCP JSON protocol for remote clients. |
-| `pkg/raftgroup` | Replicates writes across multiple shard-group replicas using a leader log and majority commit. |
+| `pkg/raftgroup` | Replicates writes across multiple shard-group replicas using a leader log, majority commit, and pluggable log storage. |
 | `cmd/shardlet` | Runs a local concurrency demo or starts the TCP server. |
 
 ## Storage Layer
@@ -49,16 +49,23 @@ The protocol is intentionally plain text so it is easy to inspect and debug. A f
 
 ## Replication Layer
 
-`pkg/raftgroup.Group` models a replicated shard group. Each replica owns an independent `shardlet.Store` and a copy of the replicated log.
+`pkg/raftgroup.Group` models a replicated shard group. Each replica owns an independent `shardlet.Store` and a copy of the replicated log. The log is written through a `LogStore`; the default is in-memory, and `FileLogStore` persists committed entries as JSON lines on disk.
 
 Write flow:
 
 1. The client calls `Put`, `Delete`, or `Rebalance` on the group.
 2. The current leader creates a `LogEntry` with the next index and current term.
-3. The entry is appended to every online replica.
+3. The group checks that enough online replicas can acknowledge the entry.
 4. The group commits the entry only if a majority of replicas acknowledges it.
-5. Committed entries are applied to each acknowledging replica's local store.
-6. Offline replicas catch up from the committed log when they return.
+5. The committed entry is appended through the configured `LogStore`.
+6. Committed entries are applied to each acknowledging replica's local store.
+7. Offline replicas catch up from the committed log when they return.
+
+Restore flow:
+
+1. `NewGroup` loads each replica's persisted log through the configured `LogStore`.
+2. The group restores the highest contiguous index that appears on a majority of replicas.
+3. Each online replica catches up to that committed index and replays committed entries into its local store.
 
 Read flow:
 
@@ -88,17 +95,18 @@ Current guarantees:
 - range scans return keys in lexical order
 - `Rebalance` rejects empty group sets
 - replicated writes require a majority before commit
+- committed raftgroup entries can be restored from memory or file-backed logs
 - writes fail when the leader is offline
 - writes fail when a quorum is unavailable
 - returning replicas catch up to the committed log
 
 Current limitations:
 
-- replication is in-memory
+- replica stores are rebuilt from committed logs at startup rather than persisted as compacted snapshots
 - replica-to-replica communication is simulated inside one process
 - leader election is deterministic, not randomized
 - there are no heartbeat timers
-- there is no durable WAL or snapshot persistence
+- there is no compacted snapshot persistence
 - there is no controller yet for multi-group shard movement
 
 ## Test Coverage
@@ -114,6 +122,7 @@ The test suite covers:
 - TCP TTL error propagation
 - majority commit
 - no-quorum rejection
+- in-memory and file-backed raftgroup log restore
 - offline follower catch-up
 - deterministic leader failover
 - concurrent replicated writes
