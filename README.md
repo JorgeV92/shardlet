@@ -188,6 +188,10 @@ The tests cover:
 - deterministic leader failover
 - concurrent replicated writes
 
+## Learning Resources
+
+See [docs/resources.md](docs/resources.md) for papers, courses, production repositories, and testing references that map to Shardlet's storage, networking, Raft-style replication, sharding, and roadmap work.
+
 ## Scope
 
 Shardlet currently focuses on the core mechanics that are useful for demonstrating Go and distributed-systems fundamentals.

@@ -125,3 +125,7 @@ make test
 make race
 make bench
 ```
+
+## Further Reading
+
+See [Learning Resources](resources.md) for papers, courses, production systems, and verification tools that map to this architecture and its roadmap.
